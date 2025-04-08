@@ -1,0 +1,52 @@
+modules = ["csharp", "dotnet-8.0"]
+
+[nix]
+channel = "stable-24_05"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "BuildAndRunAutoUpdatingService"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "build_project"
+
+[[workflows.workflow]]
+name = "BuildAndRunAutoUpdatingService"
+author = "agent"
+
+[workflows.workflow.metadata]
+agentRequireRestartOnSave = false
+
+[[workflows.workflow.tasks]]
+task = "packager.installForAll"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd AutoUpdatingService && dotnet build && cd bin/Debug/net45 && mono AutoUpdatingService.exe -debug"
+waitForPort = 5000
+
+[[workflows.workflow]]
+name = "build_project"
+author = "agent"
+
+[workflows.workflow.metadata]
+agentRequireRestartOnSave = false
+
+[[workflows.workflow.tasks]]
+task = "packager.installForAll"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "dotnet build AutoUpdatingService/AutoUpdatingService.csproj"
+
+[deployment]
+run = ["sh", "-c", "cd AutoUpdatingService && dotnet build && cd bin/Debug/net45 && mono AutoUpdatingService.exe -debug"]
