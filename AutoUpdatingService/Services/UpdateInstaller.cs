@@ -56,45 +56,25 @@ namespace AutoUpdatingService.Services
                         return false;
                     }
                     
-                    // Stop the service
+                    // Prepare update parameters and launch external updater
+                    if (!PrepareUpdateAndLaunchInstaller(tempExtractPath, backupPath, versionInfo))
+                    {
+                        _logger.LogError("Failed to prepare update, aborting");
+                        CleanupTempDirectories(tempExtractPath);
+                        return false;
+                    }
+                    
+                    // Now we can stop the service - the external process will handle the rest
                     if (!StopService())
                     {
-                        _logger.LogError("Failed to stop service, aborting update");
-                        CleanupTempDirectories(tempExtractPath);
-                        return false;
+                        _logger.LogError("Failed to stop service after launching updater. External updater will attempt to complete the update anyway.");
+                        // We continue regardless because the external updater is already running
                     }
                     
-                    // Wait for service to fully stop
-                    Thread.Sleep(3000);
+                    _logger.LogInfo("Update process handed off to external updater");
                     
-                    // Install the update
-                    if (InstallFiles(tempExtractPath))
-                    {
-                        // Update history
-                        await RecordUpdateHistoryAsync(versionInfo);
-                        
-                        _logger.LogInfo("Update installed successfully");
-                        CleanupTempDirectories(tempExtractPath);
-                        return true;
-                    }
-                    else
-                    {
-                        _logger.LogError("Failed to install update files");
-                        
-                        // Attempt to restore from backup
-                        _logger.LogInfo("Attempting to restore from backup");
-                        if (RestoreFromBackup(backupPath))
-                        {
-                            _logger.LogInfo("Restored from backup successfully");
-                        }
-                        else
-                        {
-                            _logger.LogError("Failed to restore from backup");
-                        }
-                        
-                        CleanupTempDirectories(tempExtractPath);
-                        return false;
-                    }
+                    // Don't clean up temp directories here, the external updater will do that
+                    return true;
                 }
                 else
                 {
@@ -443,6 +423,81 @@ namespace AutoUpdatingService.Services
             }
         }
 
+        private bool PrepareUpdateAndLaunchInstaller(string tempExtractPath, string backupPath, VersionInfo versionInfo)
+        {
+            try
+            {
+                _logger.LogInfo("Preparing to launch external updater process");
+                
+                // Copy the updater utility if it exists in the extracted files
+                string updaterPath = Path.Combine(_serviceDirectory, "ServiceUpdater.exe");
+                
+                // If no updater found, use a copy of the main exe with a different name
+                if (!File.Exists(updaterPath))
+                {
+                    string mainExecutable = Path.Combine(_serviceDirectory, "AutoUpdatingService.exe");
+                    if (File.Exists(mainExecutable))
+                    {
+                        File.Copy(mainExecutable, updaterPath, true);
+                        _logger.LogInfo("Created ServiceUpdater.exe from AutoUpdatingService.exe");
+                    }
+                    else
+                    {
+                        _logger.LogError("Could not find main executable for creating updater");
+                        return false;
+                    }
+                }
+                
+                // Create an update parameters file with all the info the updater needs
+                string paramsFile = Path.Combine(_config.DownloadDirectory, "update_params.json");
+                var updateParams = new
+                {
+                    ServiceName = "AutoUpdatingService",
+                    SourcePath = tempExtractPath,
+                    TargetPath = _serviceDirectory,
+                    BackupPath = backupPath,
+                    Version = versionInfo.Version,
+                    PreviousVersion = versionInfo.CurrentVersion,
+                    UpdateTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                    ReleaseNotes = versionInfo.ReleaseNotes
+                };
+                
+                // Save the update parameters to a JSON file
+                string json = _serializer.Serialize(updateParams);
+                File.WriteAllText(paramsFile, json);
+                
+                // Launch the updater process
+                Process process = new Process();
+                ProcessStartInfo startInfo = new ProcessStartInfo
+                {
+                    FileName = updaterPath,
+                    Arguments = $"-applyupdate \"{paramsFile}\"",
+                    CreateNoWindow = false,
+                    UseShellExecute = true // Run with elevated privileges
+                };
+                process.StartInfo = startInfo;
+                
+                _logger.LogInfo("Launching external updater process");
+                bool started = process.Start();
+                
+                if (started)
+                {
+                    _logger.LogInfo("External updater process launched successfully");
+                    return true;
+                }
+                else
+                {
+                    _logger.LogError("Failed to launch external updater process");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error preparing update: {ex.Message}", ex);
+                return false;
+            }
+        }
+        
         private void CopyDirectory(string sourceDir, string destDir)
         {
             // Create the destination directory
